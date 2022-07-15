@@ -38,17 +38,6 @@
     "release_date": {
       "type": "date"
     },
-    "rating": {
-      "type": "enumeration",
-      "enum": [
-        "FREE",
-        "pegi3",
-        "pegi7",
-        "pegi12",
-        "pegi16",
-        "pegi18"
-      ]
-    },
     "cover": {
       "model": "file",
       "via": "related",
