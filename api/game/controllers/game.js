@@ -10,7 +10,7 @@ module.exports = {
     console.log('Starting to populate...');
 
     const options = {
-      sort: 'popularity',
+      limit: 2,
       page: '1',
       ...ctx.query
     }

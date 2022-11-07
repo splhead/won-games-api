@@ -23,74 +23,84 @@ async function getGameInfo(slug) {
     const body = await axios.get(`https://www.gog.com/game/${slug}`)
     const dom = new JSDOM(body.data)
 
-    const ratingElement = dom.window.document.querySelector(
-      '.age-restrictions__icon use'
-    )
-
     const description = dom.window.document.querySelector('.description')
 
     return {
-      rating: ratingElement
-        ? ratingElement
-          .getAttribute('xlink:href')
-          .replace(/_/g, '')
-          .replace(/[^\w-]+/g, '')
-        : 'FREE',
       short_description: description.textContent.trim().slice(0, 160),
       description: description.innerHTML
     }
   } catch (e) {
     console.log("getGameInfo", Exception(e));
-  }  
+  }
 }
 
 async function getByName(name, entityName) {
   return strapi.services[entityName].findOne({ name })
 }
 
-async function create(name, entityName) {
-  const item = await getByName(name, entityName)
+function transformToObject(name) {
+  return {
+    name,
+    slug: slugify(name, { strict: true, lower: true })
+  }
+}
+
+async function create(object, entityName) {
+  const item = await getByName(object.name, entityName)
 
   if (!item) {
     await strapi.services[entityName].create({
-      name,
-      slug: slugify(name, { strict: true, lower: true })
+      name: object.name,
+      slug: object.slug
     })
   }
 }
 
 async function createManyToManyData(products) {
-  const developers = {};
-  const publishers = {};
-  const categories = {};
-  const platforms = {};
+  const developers = [];
+  const publishers = [];
+  const categories = [];
+  const platforms = [];
 
   products.forEach((product) => {
-    const { developer, publisher, genres, supportedOperatingSystems } = product;
+
+    const { developers: developersPerGame, publishers: publishersPerGame, genres, operatingSystems } = product;
+
+    developersPerGame &&
+    developersPerGame.forEach((developer) => {
+        developers.push(transformToObject(developer))
+      })
+
+    publishersPerGame &&
+    publishersPerGame.forEach((publisher) => {
+      publishers.push(transformToObject(publisher))
+    })
 
     genres &&
       genres.forEach((item) => {
-        categories[item] = true;
+        categories.push(item)
       });
-    supportedOperatingSystems &&
-      supportedOperatingSystems.forEach((item) => {
-        platforms[item] = true;
+
+    operatingSystems &&
+      operatingSystems.forEach((item) => {
+        platforms.push(transformToObject(item))
       });
-    developers[developer] = true;
-    publishers[publisher] = true;
   });
 
   return Promise.all([
-    ...Object.keys(developers).map((name) => create(name, "developer")),
-    ...Object.keys(publishers).map((name) => create(name, "publisher")),
-    ...Object.keys(categories).map((name) => create(name, "category")),
-    ...Object.keys(platforms).map((name) => create(name, "platform")),
+    ...developers.map((object) => create(object, "developer")),
+    ...publishers.map((object) => create(object, "publisher")),
+    ...categories.map((object) => create(object, "category")),
+    ...platforms.map((object) => create(object, "platform")),
   ]);
 }
 
 async function setImage({ image, game, field = "cover" }) {
   try {
-    const url = `https:${image}_bg_crop_1680x655.jpg`;
+    let url = image
+    if (field === 'gallery') {
+      url = image.replace('_{formatter}', '')
+    }
     const { data } = await axios.get(url, { responseType: "arraybuffer" });
     const buffer = Buffer.from(data, "base64");
 
@@ -113,7 +123,7 @@ async function setImage({ image, game, field = "cover" }) {
       },
     });
   } catch (error) {
-    console.log("setImage", Exception(e));
+    console.log("setImage", game.slug, Exception(e));
   }
 }
 
@@ -127,29 +137,39 @@ async function createGames(products) {
 
         const game = await strapi.services.game.create({
           name: product.title,
-          slug: product.slug.replace(/_/g, "-"),
-          price: product.price.amount,
+          slug: product.slug.replace(/-/g, "_"),
+          price: Number(product.price.finalMoney.amount),
           release_date: new Date(
-            Number(product.globalReleaseDate) * 1000
+            product.releaseDate
           ).toISOString(),
           categories: await Promise.all(
-            product.genres.map((name) => getByName(name, "category"))
+            product.genres.map((item) => getByName(item.name, "category"))
           ),
           platforms: await Promise.all(
-            product.supportedOperatingSystems.map((name) =>
+            product.operatingSystems.map((name) =>
               getByName(name, "platform")
             )
           ),
-          developers: [await getByName(product.developer, "developer")],
-          publisher: await getByName(product.publisher, "publisher"),
-          ...(await getGameInfo(product.slug)),
+          developers: await Promise.all(
+            product.developers.map((name) =>
+              getByName(name, "developer")
+            )
+          ),
+          publishers: await Promise.all(
+            product.publishers.map((name) =>
+              getByName(name, "publisher")
+            )
+          ),
+          ...(await getGameInfo(product.slug.replace(/-/g, "_"))),
         });
 
-        await setImage({ image: product.image, game });
+        await setImage({ image: product.coverHorizontal, game });
         await Promise.all(
-          product.gallery
+          product.screenshots
             .slice(0, 5)
-            .map((url) => setImage({ image: url, game, field: "gallery" }))
+            .map((url) => {
+              setImage({ image: url, game, field: "gallery" })
+            })
         );
 
         await timeout(2000);
@@ -163,8 +183,12 @@ async function createGames(products) {
 module.exports = {
   populate: async (params) => {
     try {
+      // const gogApiUrl =
+      // `https://www.gog.com/games/ajax/filtered?mediaType=game&${qs.stringify(
+      //   params
+      // )}`
       const gogApiUrl =
-      `https://www.gog.com/games/ajax/filtered?mediaType=game&${qs.stringify(
+      `https://catalog.gog.com/v1/catalog?${qs.stringify(
         params
       )}`
 
@@ -172,10 +196,12 @@ module.exports = {
         data: { products },
       } = await axios.get(gogApiUrl)
 
+      console.log(products[0])
+
       await createManyToManyData(products);
       await createGames(products);
     } catch (e) {
       console.log("populate", Exception(e));
-    }    
+    }
   },
 };

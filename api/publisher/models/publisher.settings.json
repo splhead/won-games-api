@@ -21,7 +21,7 @@
       "required": true
     },
     "games": {
-      "via": "publisher",
+      "via": "publishers",
       "collection": "game"
     }
   }
